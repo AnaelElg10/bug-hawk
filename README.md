@@ -190,20 +190,9 @@ terraform apply
 - **Concurrent Users**: 10,000+ supported
 - **Uptime**: 99.9% SLA target
 
-## 🤝 Contributing
-
-Please read our [Contributing Guidelines](docs/CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
-
 ## 📜 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🆘 Support
-
-- **Documentation**: [docs.bughawk.io](https://docs.bughawk.io)
-- **Issues**: [GitHub Issues](https://github.com/your-username/bughawk/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-username/bughawk/discussions)
-- **Email**: support@bughawk.io
 
 ---
 
