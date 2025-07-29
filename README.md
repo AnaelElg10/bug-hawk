@@ -207,4 +207,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-Built with ❤️ by the BugHawk team. Designed to showcase enterprise-level software engineering practices.
+Built with by Aref Elaggoun. Designed to showcase enterprise-level software engineering practices.
