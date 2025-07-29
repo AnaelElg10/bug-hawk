@@ -1,0 +1,80 @@
+{
+  "name": "bughawk",
+  "version": "1.0.0",
+  "description": "Enterprise SaaS Bug Tracking Platform",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "npm run dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "dev:setup": "docker-compose up -d postgres redis && npm run db:migrate && npm run db:seed",
+    "build": "npm run build --workspaces",
+    "build:prod": "npm run build && npm run docker:build",
+    "test": "npm run test --workspaces",
+    "test:all": "npm run test && npm run test:e2e",
+    "test:e2e": "npm run test:e2e --workspace=apps/web",
+    "lint": "npm run lint --workspaces",
+    "lint:fix": "npm run lint:fix --workspaces",
+    "db:migrate": "npm run db:migrate --workspace=apps/api",
+    "db:seed": "npm run db:seed --workspace=apps/api",
+    "db:reset": "npm run db:reset --workspace=apps/api",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "deploy:staging": "scripts/deploy/deploy.sh staging",
+    "deploy:production": "scripts/deploy/deploy.sh production",
+    "rollback:production": "scripts/deploy/rollback.sh production",
+    "install:all": "npm install && npm run postinstall",
+    "postinstall": "npm run build --workspace=packages/shared",
+    "clean": "npm run clean --workspaces && rm -rf node_modules",
+    "security:audit": "npm audit --audit-level=moderate",
+    "security:scan": "npm run security:scan --workspaces"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "concurrently": "^8.2.2",
+    "husky": "^8.0.3",
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.1.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "author": "BugHawk Team",
+  "license": "MIT",
+  "keywords": [
+    "bug-tracking",
+    "saas",
+    "enterprise",
+    "devops",
+    "issue-management",
+    "typescript",
+    "nestjs",
+    "react"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/bughawk.git"
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged",
+      "pre-push": "npm run test"
+    }
+  },
+  "lint-staged": {
+    "*.{js,ts,tsx}": [
+      "prettier --write",
+      "eslint --fix"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}

@@ -1,0 +1,321 @@
+stages:
+  - prepare
+  - security
+  - test
+  - build
+  - deploy
+  - post-deploy
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  NODE_VERSION: "18"
+  POSTGRES_VERSION: "15"
+  REDIS_VERSION: "7"
+
+# Cache configuration
+.node_cache: &node_cache
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - node_modules/
+      - apps/*/node_modules/
+      - packages/*/node_modules/
+      - .npm/
+
+# Base configuration for Node.js jobs
+.node_base: &node_base
+  image: node:${NODE_VERSION}-alpine
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+
+# Prepare stage
+install_dependencies:
+  <<: *node_base
+  <<: *node_cache
+  stage: prepare
+  script:
+    - npm run install:all
+  artifacts:
+    paths:
+      - node_modules/
+      - apps/*/node_modules/
+      - packages/*/node_modules/
+    expire_in: 1 hour
+
+# Security stage
+security_audit:
+  <<: *node_base
+  stage: security
+  dependencies:
+    - install_dependencies
+  script:
+    - npm run security:audit
+  allow_failure: true
+
+license_check:
+  <<: *node_base
+  stage: security
+  dependencies:
+    - install_dependencies
+  script:
+    - npx license-checker --onlyAllow 'MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;Unlicense'
+  allow_failure: true
+
+container_security_scan:
+  stage: security
+  image: 
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - trivy fs --security-checks vuln,config .
+  allow_failure: true
+
+# Test stage
+lint:
+  <<: *node_base
+  stage: test
+  dependencies:
+    - install_dependencies
+  script:
+    - npm run lint
+  artifacts:
+    reports:
+      junit: lint-results.xml
+
+test_shared:
+  <<: *node_base
+  stage: test
+  dependencies:
+    - install_dependencies
+  script:
+    - npm run test --workspace=packages/shared
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      junit: packages/shared/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: packages/shared/coverage/cobertura-coverage.xml
+
+test_api:
+  stage: test
+  image: node:${NODE_VERSION}-alpine
+  services:
+    - postgres:${POSTGRES_VERSION}-alpine
+    - redis:${REDIS_VERSION}-alpine
+    - docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+  variables:
+    POSTGRES_DB: bughawk_test
+    POSTGRES_USER: bughawk
+    POSTGRES_PASSWORD: test_password
+    DATABASE_URL: "postgresql://bughawk:test_password@postgres:5432/bughawk_test"
+    REDIS_URL: "redis://redis:6379"
+    ELASTICSEARCH_URL: "http://elasticsearch:9200"
+    NODE_ENV: test
+  dependencies:
+    - install_dependencies
+  before_script:
+    - apk add --no-cache postgresql-client
+    - npm ci --cache .npm --prefer-offline
+    - cd apps/api && npx prisma migrate deploy
+  script:
+    - npm run test --workspace=apps/api
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      junit: apps/api/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: apps/api/coverage/cobertura-coverage.xml
+
+test_web:
+  <<: *node_base
+  stage: test
+  dependencies:
+    - install_dependencies
+  script:
+    - npm run test --workspace=apps/web
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      junit: apps/web/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: apps/web/coverage/cobertura-coverage.xml
+
+e2e_tests:
+  stage: test
+  image: cypress/browsers:node18.16.0-chrome114.0.5735.133-1-ff114.0.2-edge114.0.1823.51-1
+  services:
+    - postgres:${POSTGRES_VERSION}-alpine
+    - redis:${REDIS_VERSION}-alpine
+  variables:
+    POSTGRES_DB: bughawk_test
+    POSTGRES_USER: bughawk
+    POSTGRES_PASSWORD: test_password
+    DATABASE_URL: "postgresql://bughawk:test_password@postgres:5432/bughawk_test"
+    REDIS_URL: "redis://redis:6379"
+  dependencies:
+    - install_dependencies
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+    - cd apps/api && npx prisma migrate deploy && npm run db:seed
+    - npm run build --workspace=apps/api &
+    - npm run build --workspace=apps/web &
+    - wait
+  script:
+    - npm run test:e2e:headless --workspace=apps/web
+  artifacts:
+    when: always
+    paths:
+      - apps/web/cypress/screenshots/
+      - apps/web/cypress/videos/
+    expire_in: 1 week
+
+# Build stage
+build_shared:
+  <<: *node_base
+  stage: build
+  dependencies:
+    - install_dependencies
+  script:
+    - npm run build --workspace=packages/shared
+  artifacts:
+    paths:
+      - packages/shared/dist/
+    expire_in: 1 hour
+
+build_api:
+  <<: *node_base
+  stage: build
+  dependencies:
+    - install_dependencies
+    - build_shared
+  script:
+    - npm run build --workspace=apps/api
+  artifacts:
+    paths:
+      - apps/api/dist/
+    expire_in: 1 hour
+
+build_web:
+  <<: *node_base
+  stage: build
+  dependencies:
+    - install_dependencies
+    - build_shared
+  script:
+    - npm run build --workspace=apps/web
+  artifacts:
+    paths:
+      - apps/web/dist/
+    expire_in: 1 hour
+
+build_docker_images:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  dependencies:
+    - build_api
+    - build_web
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE/api:$CI_COMMIT_SHA -f apps/api/Dockerfile .
+    - docker build -t $CI_REGISTRY_IMAGE/web:$CI_COMMIT_SHA -f apps/web/Dockerfile .
+    - docker push $CI_REGISTRY_IMAGE/api:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE/web:$CI_COMMIT_SHA
+    - |
+      if [[ "$CI_COMMIT_BRANCH" == "main" ]]; then
+        docker tag $CI_REGISTRY_IMAGE/api:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/api:latest
+        docker tag $CI_REGISTRY_IMAGE/web:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/web:latest
+        docker push $CI_REGISTRY_IMAGE/api:latest
+        docker push $CI_REGISTRY_IMAGE/web:latest
+      fi
+
+# Deploy stage
+deploy_staging:
+  stage: deploy
+  image: alpine:latest
+  environment:
+    name: staging
+    url: https://staging.bughawk.io
+  dependencies:
+    - build_docker_images
+  before_script:
+    - apk add --no-cache curl openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$STAGING_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan $STAGING_HOST >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - ssh $STAGING_USER@$STAGING_HOST "cd /opt/bughawk && docker-compose pull && docker-compose up -d"
+    - curl --fail --retry 5 --retry-delay 10 https://staging.bughawk.io/api/v1/health
+  only:
+    - develop
+    - staging
+
+deploy_production:
+  stage: deploy
+  image: alpine:latest
+  environment:
+    name: production
+    url: https://bughawk.io
+  dependencies:
+    - build_docker_images
+  before_script:
+    - apk add --no-cache curl openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$PRODUCTION_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan $PRODUCTION_HOST >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - ssh $PRODUCTION_USER@$PRODUCTION_HOST "cd /opt/bughawk && docker-compose pull && docker-compose up -d"
+    - curl --fail --retry 5 --retry-delay 10 https://bughawk.io/api/v1/health
+  when: manual
+  only:
+    - main
+
+# Post-deploy stage
+performance_test:
+  stage: post-deploy
+  image: alpine:latest
+  dependencies: []
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - |
+      if [[ "$CI_COMMIT_BRANCH" == "develop" ]]; then
+        ENDPOINT="https://staging.bughawk.io"
+      elif [[ "$CI_COMMIT_BRANCH" == "main" ]]; then
+        ENDPOINT="https://bughawk.io"
+      else
+        exit 0
+      fi
+    - echo "Running performance tests against $ENDPOINT"
+    - curl -s "$ENDPOINT/api/v1/health" | grep -q '"status":"healthy"'
+  only:
+    - develop
+    - main
+
+notify_deployment:
+  stage: post-deploy
+  image: alpine:latest
+  dependencies: []
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - |
+      if [[ "$CI_COMMIT_BRANCH" == "main" ]]; then
+        MESSAGE="🚀 BugHawk has been deployed to production! \n\nCommit: $CI_COMMIT_SHA \nPipeline: $CI_PIPELINE_URL"
+        curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"$MESSAGE\"}" $SLACK_WEBHOOK_URL
+      fi
+  only:
+    - main
+  when: on_success
